@@ -12,10 +12,10 @@ To run RetouchGPT, follow these steps:
 
 ### 1. Install Requirements
 
-- Install and activate the required packages using the file:
+- Install and activate the required packages using the requirements.txt file:
 
   ```
-  requirements.txt
+  conda create -n retouchgpt python=3.8
   pip install -r requirements.txt
   ```
 
