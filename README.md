@@ -66,9 +66,10 @@ To run RetouchGPT, follow these steps:
   python train.py
   ```
 
+
 ------
 
-## Test Instructions
+## Testing Instructions
 
 To test RetouchGPT:
 
@@ -76,7 +77,7 @@ To test RetouchGPT:
 
    ```bash
    cd RetouchGPT
-```
+   ```
 
 2. **Run the Testing Script**:
    Execute the testing script with:
@@ -86,4 +87,3 @@ To test RetouchGPT:
    ```
 
 - You can input user instructions and in-the-wild images for retouching purposes.
-
