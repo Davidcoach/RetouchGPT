@@ -66,10 +66,9 @@ To run RetouchGPT, follow these steps:
   python train.py
   ```
 
-```
 ------
 
-## Testing Instructions
+## Test Instructions
 
 To test RetouchGPT:
 
