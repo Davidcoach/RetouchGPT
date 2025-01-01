@@ -1,0 +1,44 @@
+{
+    "seed": 2025,
+    "save_dir": "release_model/",
+    "eval_txt": "retouchgpt.txt",
+    "train_data_loader": {
+        "dataroot": "datasets/face_retouching",
+        "size" : 512,
+        "percentage": 1
+    },
+    "losses": {
+        "valid_weight": 1000,
+        "mask_weight": 10,
+        "vgg_weight": 1,
+        "lpips_weight": 1,
+        "adversarial_weight": 1,
+        "GAN_LOSS": "hinge",
+        "id_weight": 1,
+        "ssim_weight": 10,
+        "clip_weight": 0.01,
+        "llama_weight": 1,
+        "iou_weight": 1
+    },
+    "model": {
+        "net": "RetouchGPT",
+        "no_dis": 0
+    },
+    "trainer": {
+        "use_wandb": 1,
+        "type": "Adam",
+        "beta1": 0.9,
+        "beta2": 0.99,
+        "lr": 2e-4,
+        "batch_size": 1,
+        "num_workers": 4,
+        "log_freq": 100,
+        "save_freq": 5e3,
+        "iterations": 500e4,
+        "scheduler": {
+            "type": "CosineAnnealingRestartLR",
+            "periods": [20, 15, 10, 10, 10, 10, 10, 10, 10],
+            "restart_weights": [1, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+        }
+    }
+}
