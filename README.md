@@ -2,7 +2,7 @@
 
 <img src="workflow.jpg"/>
 
-[Wen Xue](https://scholar.google.com.hk/citations?user=OXAPkaEAAAAJ&hl=zh-CN&oi=sra), Chun Ding, [RuoTao Xu](https://scholar.google.com.hk/citations?hl=zh-CN&user=9lfce18AAAAJ), [Yong Xu](https://scholar.google.com/citations?user=1hx5iwEAAAAJ), [Si Wu](https://scholar.google.com.hk/citations?user=RtkXrnwAAAAJ&hl=zh-CN&oi=sra)*, [Hau-San Wong](https://scholar.google.com.hk/citations?user=i9Dh1OkAAAAJ&hl=zh-CN)<br/>
+[Wen Xue](https://scholar.google.com.hk/citations?user=OXAPkaEAAAAJ&hl=zh-CN&oi=sra), [Chun Ding](https://scholar.google.com/citations?hl=zh-CN&user=PtuYZWMAAAAJ), [RuoTao Xu](https://scholar.google.com.hk/citations?hl=zh-CN&user=9lfce18AAAAJ), [Yong Xu](https://scholar.google.com/citations?user=1hx5iwEAAAAJ), [Si Wu](https://scholar.google.com.hk/citations?user=RtkXrnwAAAAJ&hl=zh-CN&oi=sra)*, [Hau-San Wong](https://scholar.google.com.hk/citations?user=i9Dh1OkAAAAJ&hl=zh-CN)<br/>
 
 [South China University of Technology](https://www.scut.edu.cn/en/), Institute of Super Robotics, [City University of Hong Kong](https://www.cityu.edu.hk/)
 
