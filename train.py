@@ -284,7 +284,7 @@ def _train_epoch(pbar, train_loader, iteration, netG, netD, optimD, optimG, sche
 
 
 def main(config):
-	# 初始化分布式环境
+    # 初始化分布式环境
     os.environ['MASTER_ADDR'] = get_ip()
     os.environ['MASTER_PORT'] = '14231'
     rank = int(os.environ['SLURM_PROCID'])
@@ -302,7 +302,7 @@ def main(config):
 
     # models
     model = importlib.import_module('model.' + config['model']['net'])
-    netG = model.InpaintGenerator().cuda(local_rank)
+    netG = model.InpaintGenerator(config).cuda(local_rank)
     # netG.conv.requires_grad_(False)
     netG = DDP(netG, device_ids=[local_rank])# , find_unused_parameters=True)
     netD = model.Discriminator().cuda(local_rank)
