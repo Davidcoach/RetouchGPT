@@ -268,7 +268,7 @@ def _train_epoch(pbar, train_loader, iteration, netG, netD, optimD, optimG, sche
                 })
         # saving models
         if iteration % config['trainer']['save_freq'] == 0:
-            save(int(iteration))
+            save(rank, int(iteration), epoch, netG, netD, optimD, optimG, scheG, scheD)
             if iteration == 2e4:
                 test(iteration, netG, test_loader, local_rank, lr=get_lr(scheG))
             if iteration == 6e4:
@@ -358,7 +358,7 @@ def main(config):
         sampler.set_epoch(epoch)
         _train_epoch(pbar, train_loader, iteration, netG, netD, optimD, optimG, scheG, scheD, local_rank, rank, world_size, val_loader, loss_functions)
         if iteration > config['trainer']['iterations']:
-            save(int(iteration))
+            save(rank, int(iteration), epoch, netG, netD, optimD, optimG, scheG, scheD)
             break
     print('\nEnd training....')
 
