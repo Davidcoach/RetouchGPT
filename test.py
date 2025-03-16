@@ -23,7 +23,7 @@ if __name__ == '__main__':
     # First load the chechpoints of RetouchGPT
     module_name = 'model.' + args.model
     net = importlib.import_module(module_name)
-    model = net.InpaintGenerator().to(device)
+    model = net.InpaintGenerator(args).to(device)
     print(args.model)
     data = torch.load("{0}/gen_{1}.pth".format(args.ckpt, args.epoch), map_location=device)
     model.load_state_dict(data)
