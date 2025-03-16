@@ -436,7 +436,7 @@ class AlphaClipLoss(nn.Module):
         super(AlphaClipLoss, self).__init__()
         self.model, self.preprocess = alpha_clip.load("ViT-B/16",
                                                       alpha_vision_ckpt_pth="model/modules/clip_b16_grit1m_fultune_8xe.pth",
-                                                      device=f"cuda: {local_rank}")  # change to your own ckpt path
+                                                      device=f"cuda:{local_rank}")  # change to your own ckpt path
         self.mask_transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Resize((224, 224)),  # change to (336,336) when using ViT-L/14@336px
