@@ -12,32 +12,6 @@ from model.enc_dec import Decoder, Encoder, EqualLinear, ConvLayer
 
 PROMPT_START = '### Human: <Img>'
 
-
-def T5_model_load(model_path):
-    tokenizer = T5Tokenizer.from_pretrained(model_path, legacy=False)
-    model = T5ForConditionalGeneration.from_pretrained(model_path, device_map="auto")
-    for param in model.parameters():
-        param.requires_grad = False
-
-    print('T5 model initialized.')
-
-    return model, tokenizer
-
-
-def T5_outputs_embedding(model, tokenizer, input_text):
-    # Use T5 to get text embeddings.
-    txt_list = [msg['value'][0] for conversation in input_text for msg in conversation if 'human' in msg['from']]
-    human_texts = [''.join(txt_list)]
-
-    inputs = tokenizer(human_texts, return_tensors="pt", padding=True, truncation=True).to("cuda")
-    with torch.no_grad():
-        outputs = model(input_ids=inputs.input_ids, attention_mask=inputs.attention_mask, decoder_input_ids=inputs.input_ids)
-
-    outputs_embedding = outputs.encoder_last_hidden_state  # torch.Size([1, 47, 1024])
-
-    return outputs_embedding
-    
-
 def build_one_instance(tokenizer, conversation):
     text_list = []
     turn_num = len(conversation)
@@ -152,7 +126,7 @@ class deconv(nn.Module):
         return F.interpolate(x, scale_factor=self.scale_factor, mode='bilinear', align_corners=True, recompute_scale_factor=False)
 
 class InpaintGenerator(BaseNetwork):
-    def __init__(self, args):
+    def __init__(self):
         super(InpaintGenerator, self).__init__()
         # encoder
         self.encoder = Encoder(
@@ -190,7 +164,7 @@ class InpaintGenerator(BaseNetwork):
         self.final_conv = ConvLayer(512, 4096, 3, downsample=True)
         self.final_linear = EqualLinear(32*32, 1, activation='fused_lrelu')
         self.norm = nn.LayerNorm(512)
-        self.attention_feat = attention()
+        self.attention_feat = T5_Imperfection_Prediction()
         self.conv_512 = nn.Sequential(
             nn.Conv2d(64, 128, 3, 2, 1), nn.LeakyReLU(),
             nn.Conv2d(128, 256, 3, 2, 1), nn.LeakyReLU(),
@@ -241,6 +215,7 @@ class InpaintGenerator(BaseNetwork):
         vicuna_ckpt_path = args['vicuna_ckpt_path']
         print(f'Initializing language decoder from {vicuna_ckpt_path} ...')
         self.prompt_control = prompt_control()
+        
         peft_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM, 
             inference_mode=False, 
@@ -250,9 +225,9 @@ class InpaintGenerator(BaseNetwork):
             target_modules=['q_proj', 'k_proj', 'v_proj', 'o_proj']
         )
         # from peft import PeftModel
-        self.llama_model = AutoModelForCausalLM.from_pretrained(vicuna_ckpt_path, torch_dtype=torch.float32, output_hidden_states=True)
+        self.llama_model = AutoModelForCausalLM.from_pretrained(vicuna_ckpt_path, torch_dtype=torch.float16, output_hidden_states=True, attn_implementation="flash_attention_2")
         self.llama_model = get_peft_model(self.llama_model, peft_config)
-        self.llama_model.requires_grad_(False)
+        # self.llama_model.requires_grad_(False)
         self.llama_tokenizer = AutoTokenizer.from_pretrained(vicuna_ckpt_path, use_fast=False)
         self.llama_tokenizer.pad_token = self.llama_tokenizer.eos_token
         self.llama_tokenizer.padding_side = "right"
@@ -328,19 +303,18 @@ class InpaintGenerator(BaseNetwork):
                            decoder_noise[3], decoder_noise[4], decoder_noise[5]], dim=2)
         B, C, T, H, W = vrt.shape
         attention_feat, attentions = self.attention_feat(source_tensor, vrt.view(B*T, C, H, W), output_texts)
-        anomaly_map_prompts = self.prompt_learner(attention_feat.view(B, C*T, H, W)) # B*T, 18, 4096
         input_ids, target_ids, attention_mask = process_batch_instance(self.llama_tokenizer, output_texts, 1024)
+        anomaly_map_prompts = self.prompt_learner(attention_feat.view(B, C*T, H, W)) # B*T, 18, 4096
         inputs_embeds, targets, attention_mask = self.prompt_wrap(style, input_ids, target_ids, attention_mask, anomaly_map_prompts)
         outputs = self.llama_model(
-            inputs_embeds=inputs_embeds.to(torch.float32),
-            attention_mask=attention_mask.to(torch.float32),
+            inputs_embeds=inputs_embeds.to(torch.float16),
+            attention_mask=attention_mask.to(torch.float16),
             return_dict=True,
             labels=targets)
         gen_acc = self.gen_acc(outputs.logits, targets)
-        # to calculate imperfection loss
         
         # the transformer part
-        alpha, beta, gamma = self.prompt_control(outputs.hidden_states[-1])
+        alpha, beta, gamma = self.prompt_control(outputs.hidden_states[-1].to(torch.float32), attention_mask.to(torch.float32))
         vrt = self.vrt(vrt.reshape(B, C, T, H, W), attention_feat.reshape(B, C, T, H, W), alpha.reshape(B, C, T, H, W), beta.reshape(B, C, T, H, W), gamma.reshape(B, C, T, H, W)).reshape(B, T, H, W, C)
         vrt = self.norm(vrt).reshape(T, B, C, H, W)
         vrt = vrt.reshape(T, B, C, H, W)
@@ -357,7 +331,7 @@ class InpaintGenerator(BaseNetwork):
             # raw_noise.append((decoder_noise[i] * block(1-attention_feat[i])) - block(vrt[i] * attention_feat[i]))
             decoder_noise[i] = (decoder_noise[i] * block(1-attention_feat[i])) + block(vrt[i] * attention_feat[i])
         result = self.decoder(decoder_noise[::-1])
-        return result, outputs, attentions, gen_acc
+        return result, attentions, outputs,  gen_acc
 
 
 
@@ -365,8 +339,6 @@ class InpaintGenerator(BaseNetwork):
 # ######################################################################
 #  Discriminator for Temporal Patch GAN
 # ######################################################################
-
-
 class Discriminator(BaseNetwork):
     def __init__(self,
                  in_channels=3,
@@ -454,7 +426,6 @@ def conv(in_channels, out_channels, kernel_size, bias=False, stride = 1):
         padding=(kernel_size//2), bias=bias, stride=stride)
 
 
-
 class img_attention(nn.Module):
     def __init__(self):
         super().__init__()
@@ -471,54 +442,110 @@ class img_attention(nn.Module):
         alpha, beta = torch.split(sigmoid_params, 512, dim=1)
         return x*alpha + beta
 
-####################################
-## Supervised Attention Module #####
-class attention(nn.Module):
-    def __init__(self):
+
+class T5FeatureProjector(nn.Module):
+    def __init__(self, input_dim = 1024, out_channels= 512, out_dim= 8*8):
         super().__init__()
+        self.input_dim = input_dim
+        self.out_channels = out_channels
+        self.out_dim = out_dim
+
+        # Learnable attention pooling: score each token
+        self.token_score = nn.Linear(1024, 1)
+
+        # Linear projection to (out_channels, out_dim)
+        self.projector = nn.Linear(input_dim, out_channels * out_dim)
+
+    def forward(self, hidden_states, attention_mask=None):
+        """
+        hidden_states: (B, L, D)
+        attention_mask: (B, L)
+        """
+        B, L, D = hidden_states.size()
+        assert D == self.input_dim, "Input dim mismatch."
+
+        # Compute attention weights over tokens
+        scores = self.token_score(hidden_states).squeeze(-1)  # (B, L)
+
+        if attention_mask is not None:
+            scores = scores.masked_fill(attention_mask == 0, -1e9)
+
+        weights = F.softmax(scores, dim=1).unsqueeze(-1)  # (B, L, 1)
+
+        # Weighted sum over tokens
+        pooled = torch.sum(hidden_states * weights, dim=1)  # (B, D)
+
+        # Project to (B, C * H*W)
+        projected = self.projector(pooled)  # (B, 512 * 4096)
+        output = projected.view(B, self.out_channels, self.out_dim)  # (B, 512, 4096)
+
+        return output
+
+
+class T5_Imperfection_Prediction(nn.Module):
+    def __init__(self, t5_model_path="/share/home/HCI/xuewen/RetouchGPT/Flan-T5-Large"):
+        super().__init__()
+        self.t5_model_path = t5_model_path
+        self.tokenizer = T5Tokenizer.from_pretrained(t5_model_path, legacy=False)
+        self.model = T5ForConditionalGeneration.from_pretrained(t5_model_path, device_map="auto")
+        for p in self.model.parameters():
+            p.requires_grad = False
+        self.projector = T5FeatureProjector() 
+
+        # 图像和文本融合模块
         self.conv0 = nn.Sequential(
-            nn.Conv2d(512, 512, 3, padding=1, stride=1), nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(512, 512, 3, padding=1, stride=1), nn.LeakyReLU(0.2, inplace=True))
-        self.feat_attention = img_attention()
-
-        T5_model_path = "/share/home/HCI/dingchun/RetouchGPT/Flan-T5-Large"
-        print(f"Initialing T5 model from {T5_model_path} ...")
-        
-        self.T5_model, self.T5_tokenizer = T5_model_load(T5_model_path)
-        self.txt_linear = nn.Linear(1024, 512)
-        self.txt_expand = nn.Linear(64, 64 * 64)
+            nn.Conv2d(512, 512, 3, padding=1), nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(512, 512, 3, padding=1), nn.LeakyReLU(0.2, inplace=True))
         self.txt_conv = nn.Sequential(
-            nn.Conv2d(512, 512, 1, padding=0, stride=1), nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(512, 512, 1, padding=0, stride=1), nn.LeakyReLU(0.2, inplace=True))
+            deconv(512, 512, kernel_size=3, padding=1, scale_factor=2), nn.LeakyReLU(0.2, inplace=True),
+            deconv(512, 512, kernel_size=3, padding=1, scale_factor=2), nn.LeakyReLU(0.2, inplace=True),
+            deconv(512, 512, kernel_size=3, padding=1, scale_factor=2), nn.LeakyReLU(0.2, inplace=True))
         self.conv1 = nn.Sequential(
-            nn.Conv2d(1024, 1024, 1, padding=0, stride=1), nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(1024, 512, 1, padding=0, stride=1), nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(512, 512, 3, padding=1, stride=1), nn.LeakyReLU(0.2, inplace=True))
+            nn.Conv2d(1024, 1024, 1), nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(1024, 512, 1), nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(512, 512, 3, padding=1), nn.LeakyReLU(0.2, inplace=True))
 
+        self.feat_attention = img_attention()  # 外部定义的注意力融合模块
 
-    def forward(self, img, feat, txt):
-        # print(f"txt:{txt}\n")
-        img_atten = self.conv0(feat)
-        b, c, h, w = img_atten.shape
-        txt_atten = T5_outputs_embedding(self.T5_model, self.T5_tokenizer, txt).permute(0, 2, 1)
-        B, C, L = txt_atten.shape
-        txt_atten = self.txt_linear(txt_atten.reshape(B, L, C)).reshape(B, 512, L)
-        if L > 64:
-            txt_atten = txt_atten[:, :, :64]
-        else:
-            padding_size = 64 - L
-            padding = torch.zeros((B, 512, padding_size)).to(txt_atten.device)
-            txt_atten = torch.cat((txt_atten, padding), dim=2)
-        txt_atten = self.txt_expand(txt_atten)
-        txt_atten = txt_atten.repeat(b//B, 1, 1)
-        txt_atten = txt_atten.reshape(b, c, h, w)
-        txt_atten = self.txt_conv(txt_atten)
-        # print(f"img_atten shape: {img_atten.shape}")
-        # print(f"txt_atten shape: {txt_atten.shape}")
-        atten = torch.cat([img_atten, txt_atten], dim=1)
-        atten = self.conv1(atten)
-        atten = self.feat_attention(atten, img)
-        return torch.sigmoid(atten), []
+    def extract_text_features(self, conversations):
+        """
+        conversations: List[List[Dict]] 格式的多轮对话数据
+        return: projected T5 features (B, 512, 4096)
+        """
+        # 获取 human 输入文本
+        txt_list = [msg['value'][0] for conv in conversations for msg in conv if msg['from'] == 'human']
+        joined_text = [''.join(txt_list)]
+        inputs = self.tokenizer(joined_text, return_tensors="pt", padding=True, truncation=True).to("cuda")
+
+        with torch.no_grad():
+            outputs = self.model(
+                input_ids=inputs.input_ids,
+                attention_mask=inputs.attention_mask,
+                decoder_input_ids=inputs.input_ids  # 只是激活 forward
+            )
+
+        encoder_hidden = outputs.encoder_last_hidden_state  # (B, L, 1024)
+        return self.projector(encoder_hidden, inputs.attention_mask)
+
+    def forward(self, img, feat, conversations):
+        """
+        img: 原图 (B, 3, H, W)
+        feat: 图像特征 (B, 512, H, W)
+        conversations: List[List[Dict]] 的对话列表
+        """
+        img_feat = self.conv0(feat)
+        b, c, h, w = img_feat.size()
+
+        # 文本处理
+        txt_feat = self.extract_text_features(conversations)  # (B, 512, 4096)
+        txt_feat = txt_feat.repeat(b // txt_feat.shape[0], 1, 1)
+        txt_feat = self.txt_conv(txt_feat.reshape(b, c, 8, 8))
+        # 拼接融合
+        fused = torch.cat([img_feat, txt_feat], dim=1)  # (B, 1024, H, W)
+        out = self.conv1(fused)
+        out = self.feat_attention(out, img)
+
+        return torch.sigmoid(out), []
 
 ####################################
 
@@ -554,60 +581,32 @@ class PromptLearner(nn.Module):
         return output
 
 
-class prompt_control(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.linear = nn.Linear(256, 512)
-        self.conv = nn.Sequential(
-            nn.Conv2d(512, 512, 3, padding=1, stride=1), nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(512, 512 * 2, 3, padding=1, stride=1), nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(512 * 2, 512 * 4, 3, padding=1, stride=1), nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(512 * 4, 512 * 6, 3, padding=1, stride=1), nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(512 * 6, 512 * 6, 1, padding=0, stride=1))
-        
-    def forward(self, x):
-        # atten = self.linear(x)
-        B, C, L = x.shape
-        if C > 256:
-            x = x[:, :256, :]
-        else:
-            padding_size = 256 - C
-            padding = torch.zeros((B, padding_size, L)).to(x.device)
-            x = torch.cat((x, padding), dim=1)
-        x = self.linear(x.reshape(B, L, 256))
-        x = x.reshape((B, 512, 64, 64))
-        x = self.conv(x)
-        return torch.sigmoid(x)
 
 class prompt_control(nn.Module):
     def __init__(self):
         super().__init__()
-        self.linear = nn.Linear(256, 512)
+        self.linear = nn.Linear(4096, 512 * 8 * 8)
         self.conv0 = nn.Sequential(
-            nn.Conv2d(512, 512, 3, padding=1, stride=1), nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(512, 512 * 2, 3, padding=1, stride=1), nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(512 * 2, 512 * 4, 3, padding=1, stride=1), nn.LeakyReLU(0.2, inplace=True),
+            deconv(512, 512, kernel_size=3, padding=1, scale_factor=2), nn.LeakyReLU(0.2, inplace=True),
+            deconv(512, 512 * 2, kernel_size=3, padding=1, scale_factor=2), nn.LeakyReLU(0.2, inplace=True),
+            deconv(512 * 2, 512 * 4, kernel_size=3, padding=1, scale_factor=2), nn.LeakyReLU(0.2, inplace=True),
             nn.Conv2d(512 * 4, 512 * 6, 3, padding=1, stride=1), nn.LeakyReLU(0.2, inplace=True),
             nn.Conv2d(512 * 6, 512 * 12, 1, padding=0, stride=1))
         self.conv1 = nn.Sequential(
-            nn.Conv2d(512, 512, 3, padding=1, stride=1), nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(512, 512 * 2, 3, padding=1, stride=1), nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(512 * 2, 512 * 4, 3, padding=1, stride=1), nn.LeakyReLU(0.2, inplace=True),
+            deconv(512, 512, kernel_size=3, padding=1, scale_factor=2), nn.LeakyReLU(0.2, inplace=True),
+            deconv(512, 512 * 2, kernel_size=3, padding=1, scale_factor=2), nn.LeakyReLU(0.2, inplace=True),
+            deconv(512 * 2, 512 * 4, kernel_size=3, padding=1, scale_factor=2), nn.LeakyReLU(0.2, inplace=True),
             nn.Conv2d(512 * 4, 512 * 6, 3, padding=1, stride=1), nn.LeakyReLU(0.2, inplace=True),
             nn.Conv2d(512 * 6, 512 * 6, 1, padding=0, stride=1))
         
-    def forward(self, x):
-        # atten = self.linear(x)
-        B, C, L = x.shape
-        if C > 256:
-            x = x[:, :256, :]
-        else:
-            padding_size = 256 - C
-            padding = torch.zeros((B, padding_size, L)).to(x.device)
-            x = torch.cat((x, padding), dim=1)
-        x = self.linear(x.reshape(B, L, 256))
-        x = x.reshape((B, 512, 64, 64))
-        sigma = self.conv0(x)
-        gamma = self.conv1(x)
+    def forward(self, x, attention_mask):
+        mask = attention_mask.unsqueeze(-1).expand(x.size())  # shape: (batch_size, seq_len, hidden_size)
+        masked_hidden = x * mask
+        mean_pooled = masked_hidden.sum(dim=1) / mask.sum(dim=1)  # shape: (batch_size, hidden_size)
+        B, L = mean_pooled.shape
+        mean_pooled = self.linear(mean_pooled)
+        mean_pooled = mean_pooled.reshape((B, 512, 8, 8))
+        sigma = self.conv0(mean_pooled)
+        gamma = self.conv1(mean_pooled)
         alpha, beta = torch.split(sigma, 512 * 6, dim=1)
         return alpha, beta, gamma
