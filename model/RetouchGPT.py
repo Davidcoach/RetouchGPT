@@ -126,7 +126,7 @@ class deconv(nn.Module):
         return F.interpolate(x, scale_factor=self.scale_factor, mode='bilinear', align_corners=True, recompute_scale_factor=False)
 
 class InpaintGenerator(BaseNetwork):
-    def __init__(self):
+    def __init__(self, args):
         super(InpaintGenerator, self).__init__()
         # encoder
         self.encoder = Encoder(
@@ -143,8 +143,7 @@ class InpaintGenerator(BaseNetwork):
             blur_kernel=[1, 3, 3, 1],
             isconcat=True,
             narrow=1,
-            device='cuda'
-        )
+            device='cuda')
 
         self.vrt = Stage(in_dim=512,
                          dim=512,
@@ -164,46 +163,38 @@ class InpaintGenerator(BaseNetwork):
         self.final_conv = ConvLayer(512, 4096, 3, downsample=True)
         self.final_linear = EqualLinear(32*32, 1, activation='fused_lrelu')
         self.norm = nn.LayerNorm(512)
-        self.attention_feat = T5_Imperfection_Prediction()
+
+        self.attention_feat = T5_Imperfection_Prediction(args['t5_path'])
         self.conv_512 = nn.Sequential(
             nn.Conv2d(64, 128, 3, 2, 1), nn.LeakyReLU(),
             nn.Conv2d(128, 256, 3, 2, 1), nn.LeakyReLU(),
-            nn.Conv2d(256, 512, 3, 2, 1), nn.LeakyReLU()
-        )
+            nn.Conv2d(256, 512, 3, 2, 1), nn.LeakyReLU())
         self.conv_256 = nn.Sequential(
             nn.Conv2d(128, 256, 3, 2, 1), nn.LeakyReLU(),
-            nn.Conv2d(256, 512, 3, 2, 1), nn.LeakyReLU()
-        )
+            nn.Conv2d(256, 512, 3, 2, 1), nn.LeakyReLU())
         self.conv_128 = nn.Sequential(
-            nn.Conv2d(256, 512, 3, 2, 1), nn.LeakyReLU()
-        )
+            nn.Conv2d(256, 512, 3, 2, 1), nn.LeakyReLU())
         self.back_512 = nn.Sequential(
             deconv(512, 256, kernel_size=3, padding=1, scale_factor=2), nn.LeakyReLU(),
             nn.Conv2d(256, 256, 1, stride=1, padding=0), nn.LeakyReLU(),
             deconv(256, 128, kernel_size=3, padding=1, scale_factor=2), nn.LeakyReLU(),
             nn.Conv2d(128, 128, 1, stride=1, padding=0), nn.LeakyReLU(),
-            deconv(128, 64, kernel_size=3, padding=1, scale_factor=2), nn.LeakyReLU(),
-        )
+            deconv(128, 64, kernel_size=3, padding=1, scale_factor=2), nn.LeakyReLU(),)
         self.back_256 = nn.Sequential(
             deconv(512, 256, kernel_size=3, padding=1, scale_factor=2), nn.LeakyReLU(),
             nn.Conv2d(256, 256, 1, stride=1, padding=0), nn.LeakyReLU(),
-            deconv(256, 128, kernel_size=3, padding=1, scale_factor=2), nn.LeakyReLU()
-        )
+            deconv(256, 128, kernel_size=3, padding=1, scale_factor=2), nn.LeakyReLU())
         self.back_128 = nn.Sequential(
-            deconv(512, 256, kernel_size=3, padding=1, scale_factor=2), nn.LeakyReLU()
-        )
+            deconv(512, 256, kernel_size=3, padding=1, scale_factor=2), nn.LeakyReLU())
         self.back_65 = nn.Sequential(
             nn.Conv2d(512, 512, 3, 1, 1), nn.LeakyReLU(),
-            nn.Conv2d(512, 512, 3, 1, 1), nn.LeakyReLU()
-        )
+            nn.Conv2d(512, 512, 3, 1, 1), nn.LeakyReLU())
         self.back_64 = nn.Sequential(
             nn.Conv2d(512, 512, 3, 1, 1), nn.LeakyReLU(),
-            nn.Conv2d(512, 512, 3, 1, 1), nn.LeakyReLU()
-        )
+            nn.Conv2d(512, 512, 3, 1, 1), nn.LeakyReLU())
         self.back_63 = nn.Sequential(
             nn.Conv2d(512, 512, 3, 1, 1), nn.LeakyReLU(),
-            nn.Conv2d(512, 512, 3, 1, 1), nn.LeakyReLU()
-        )
+            nn.Conv2d(512, 512, 3, 1, 1), nn.LeakyReLU())
         self.conv = nn.Sequential(deconv(512, 256, kernel_size=3, padding=1, scale_factor=2), nn.LeakyReLU(),
                                   deconv(256, 128, kernel_size=3, padding=1, scale_factor=2), nn.LeakyReLU(),
                                   deconv(128, 64, kernel_size=3, padding=1, scale_factor=2), nn.LeakyReLU(),
@@ -222,10 +213,10 @@ class InpaintGenerator(BaseNetwork):
             r=32, 
             lora_alpha=32, 
             lora_dropout=0.1,
-            target_modules=['q_proj', 'k_proj', 'v_proj', 'o_proj']
-        )
+            target_modules=['q_proj', 'k_proj', 'v_proj', 'o_proj'])
         # from peft import PeftModel
-        self.llama_model = AutoModelForCausalLM.from_pretrained(vicuna_ckpt_path, torch_dtype=torch.float16, output_hidden_states=True, attn_implementation="flash_attention_2")
+        # self.llama_model = AutoModelForCausalLM.from_pretrained(vicuna_ckpt_path, torch_dtype=torch.float32, output_hidden_states=True)
+        self.llama_model = AutoModelForCausalLM.from_pretrained(vicuna_ckpt_path, torch_dtype=torch.float32, output_hidden_states=True,device_map="cuda")
         self.llama_model = get_peft_model(self.llama_model, peft_config)
         # self.llama_model.requires_grad_(False)
         self.llama_tokenizer = AutoTokenizer.from_pretrained(vicuna_ckpt_path, use_fast=False)
@@ -233,7 +224,6 @@ class InpaintGenerator(BaseNetwork):
         self.llama_tokenizer.padding_side = "right"
         print('Language decoder initialized.')
 
-        
     def prompt_wrap(self, img_embeds, input_ids, target_ids, attention_mask, anomaly_embedding=None):
         '''
             input_ids, target_ids, attention_mask: bsz x s2
@@ -251,7 +241,6 @@ class InpaintGenerator(BaseNetwork):
         p_middle_tokens = self.llama_tokenizer(p_middle, return_tensors="pt", add_special_tokens=False).to(self.device)
         # peft model need deeper call
         p_middle_embeds = self.llama_model.model.model.embed_tokens(p_middle_tokens.input_ids).expand(batch_size, -1, -1)  # bsz x s1 x embed_dim
-        # employ T5
         # p_after_outputs = self.T5_model(input_ids)
         # p_after_embeds = p_after_outputs.last_hidden_state.expand(batch_size, -1, -1)
         p_after_embeds = self.llama_model.model.model.embed_tokens(input_ids).expand(batch_size, -1, -1)  # bsz x s2 x embed_dim
@@ -307,8 +296,8 @@ class InpaintGenerator(BaseNetwork):
         anomaly_map_prompts = self.prompt_learner(attention_feat.view(B, C*T, H, W)) # B*T, 18, 4096
         inputs_embeds, targets, attention_mask = self.prompt_wrap(style, input_ids, target_ids, attention_mask, anomaly_map_prompts)
         outputs = self.llama_model(
-            inputs_embeds=inputs_embeds.to(torch.float16),
-            attention_mask=attention_mask.to(torch.float16),
+            inputs_embeds=inputs_embeds.to(torch.float32),
+            attention_mask=attention_mask.to(torch.float32),
             return_dict=True,
             labels=targets)
         gen_acc = self.gen_acc(outputs.logits, targets)
@@ -483,7 +472,7 @@ class T5FeatureProjector(nn.Module):
 
 
 class T5_Imperfection_Prediction(nn.Module):
-    def __init__(self, t5_model_path="/share/home/HCI/xuewen/RetouchGPT/Flan-T5-Large"):
+    def __init__(self, t5_model_path):
         super().__init__()
         self.t5_model_path = t5_model_path
         self.tokenizer = T5Tokenizer.from_pretrained(t5_model_path, legacy=False)
@@ -568,8 +557,7 @@ class PromptLearner(nn.Module):
             nn.ReLU(inplace=True),
             nn.MaxPool2d(2),
 
-            nn.Conv2d(dim_in * 4, dim_out, kernel_size=4, padding=0, stride=2),
-        )
+            nn.Conv2d(dim_in * 4, dim_out, kernel_size=4, padding=0, stride=2))
         self.base_prompts = nn.Parameter(torch.randn((9, dim_out)),requires_grad=True)
 
     def forward(self, input):
