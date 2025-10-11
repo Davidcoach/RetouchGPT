@@ -21,6 +21,15 @@ This is the official code of **AAAI 2025**: *RetouchGPT: LLM-based Interactive H
 - **LLM-Based Embedding (LBE):** Designed the LBE module to fuse textual and visual conditioning information, generating imperfection prompts. These prompts guide content generation in imperfection regions by leveraging a latent transformer with cross-attention-based feature modification at each block.   
 - **State-of-the-Art Performance:** We fuse multimodal conditioning information via LLM to obtain imperfection prompts, which controls imperfection feature modification in the interactive retouching process.  
 
+## Pre-trained Weights
+
+We provide the trained checkpoint **`gen_best.pth`** via Baidu Netdisk:
+
+- **Link:** <https://pan.baidu.com/s/1eVgPN12KJN8GSdOw544ZdQ>  
+- **Extraction code:** `reto`
+
+> After download, place `gen_best.pth` under `release_model/` and reference it in your config or command line.
+
 ------
 
 ## Setup Instructions
