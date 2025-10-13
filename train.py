@@ -281,6 +281,7 @@ def _train_epoch(pbar, train_loader, iteration, netG, netD, optimD, optimG, sche
                 test(iteration, netG, test_loader, local_rank, lr=get_lr(scheG))
         if iteration > config['trainer']['iterations']:
             break
+    return iteration
 
 
 def main(config):
@@ -356,7 +357,7 @@ def main(config):
     while True:
         epoch += 1
         sampler.set_epoch(epoch)
-        _train_epoch(pbar, train_loader, iteration, netG, netD, optimD, optimG, scheG, scheD, local_rank, rank, world_size, val_loader, loss_functions)
+        iteration = _train_epoch(pbar, train_loader, iteration, netG, netD, optimD, optimG, scheG, scheD, local_rank, rank, world_size, val_loader, loss_functions)
         if iteration > config['trainer']['iterations']:
             save(rank, int(iteration), epoch, netG, netD, optimD, optimG, scheG, scheD)
             break
