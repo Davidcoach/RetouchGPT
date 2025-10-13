@@ -213,7 +213,8 @@ class Mlp_GEGLU(nn.Module):
 
 
 class Attention(nn.Module):
-    """
+    """ Window based multi-head mutual attention and self attention.
+
     Args:
         dim (int): Number of input channels.
         window_size (tuple[int]): The temporal length, height and width of the window.
@@ -233,9 +234,6 @@ class Attention(nn.Module):
         self.mut_attn = mut_attn
 
         # self attention with relative position bias
-        self.relative_position_bias_table = nn.Parameter(
-            torch.zeros((2 * window_size[0] - 1) * (2 * window_size[1] - 1) * (2 * window_size[2] - 1), num_heads))  # 2*Wd-1 * 2*Wh-1 * 2*Ww-1, nH
-        self.register_buffer("relative_position_index", self.get_position_index(window_size))
         self.q_self = nn.Linear(dim, dim, bias=qkv_bias)
         self.k_self = nn.Linear(dim, dim, bias=qkv_bias)
         self.v_self = nn.Linear(dim, dim, bias=qkv_bias)
@@ -244,16 +242,7 @@ class Attention(nn.Module):
         self.control_module = nn.Linear(dim, dim)
         self.control_to_qkv = nn.Linear(dim, 3 * dim)
 
-        # mutual attention with sine position encoding
-        if self.mut_attn:
-            self.register_buffer("position_bias", self.get_sine_position_encoding(window_size[1:], dim // 2, normalize=True))
-            self.q_mut = nn.Linear(dim, dim, bias=qkv_bias)
-            self.k_mut = nn.Linear(dim, dim, bias=qkv_bias)
-            self.v_mut = nn.Linear(dim, dim, bias=qkv_bias)
-            self.proj = nn.Linear(2 * dim, dim)
-
         self.softmax = nn.Softmax(dim=-1)
-        trunc_normal_(self.relative_position_bias_table, std=.02)
 
     def forward(self, x, mask = None, mask_windows = None, mask_res_windows = None, gamma = None):
         """ Forward function.
@@ -264,101 +253,24 @@ class Attention(nn.Module):
         """
 
         # self attention
+        # 控制信号生成
         B_, N, C = x.shape
         control_signal = torch.sigmoid(self.control_module(gamma))
         control_qkv = self.control_to_qkv(control_signal).reshape(3, B_, N, C)
         control_q, control_k, control_v = control_qkv[0], control_qkv[1], control_qkv[2]
-        q  = (self.q_self(x + x * mask_windows) + control_q).reshape(B_, N, 1, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        k  = (self.k_self(x + x * mask_res_windows) + control_k).reshape(B_, N, 1, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        v  = (self.v_self(x + x * mask_res_windows) + control_v).reshape(B_, N, 1, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        x_out = self.attention(q, k, v, mask, (B_, N, C), relative_position_encoding=True)
-
-
-        # mutual attention
-        if self.mut_attn:
-            q = (self.q_mut(x + x * mask_windows + self.position_bias.repeat(1, 2, 1)) + control_q).reshape(B_, N, 1, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-            k = (self.k_mut(x + x * mask_res_windows + self.position_bias.repeat(1, 2, 1)) + control_k).reshape(B_, N, 1, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-            v = (self.v_mut(x + x * mask_res_windows + self.position_bias.repeat(1, 2, 1)) + control_v).reshape(B_, N, 1, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)            
-            (q1, q2) = torch.chunk(q[0], 2, dim=2)
-            (k1, k2) = torch.chunk(k[0], 2, dim=2)
-            (v1, v2) = torch.chunk(v[0], 2, dim=2)
-            x1_aligned = self.attention(q2, k1, v1, mask, (B_, N // 2, C), relative_position_encoding=False)
-            x2_aligned = self.attention(q1, k2, v2, mask, (B_, N // 2, C), relative_position_encoding=False)
-            x_out = torch.cat([torch.cat([x1_aligned, x2_aligned], 1), x_out], 2)
+        q  = (self.q_self(x + x * mask_windows) + control_q).reshape(B_, N, self.num_heads, C // self.num_heads)
+        k  = (self.k_self(x + x * mask_res_windows) + control_k).reshape(B_, N, self.num_heads, C // self.num_heads)
+        v  = (self.v_self(x + x * mask_res_windows) + control_v).reshape(B_, N, self.num_heads, C // self.num_heads)
+        from flash_attn import flash_attn_func
+        # x_out = self.attention(q, k, v, mask, (B_, N, C), relative_position_encoding=True)
+        x_out = flash_attn_func(q.to(torch.float16), k.to(torch.float16), v.to(torch.float16))
+        x_out = x_out.to(torch.float32)
 
         # projection
-        x = self.proj(x_out)
+        x = self.proj(x_out.reshape(B_, N, C))
 
         return x
 
-    def attention(self, q, k, v, mask, x_shape, relative_position_encoding=True):
-        B_, N, C = x_shape
-        attn = (q * self.scale) @ k.transpose(-2, -1) # 矩阵乘法
-
-        if relative_position_encoding: 
-            relative_position_bias = self.relative_position_bias_table[self.relative_position_index[:N, :N].reshape(-1)].reshape(N, N, -1) 
-            attn = attn + relative_position_bias.permute(2, 0, 1).unsqueeze(0)  # B_, nH, N, N
-
-        if mask is None:
-            attn = self.softmax(attn)
-        else:
-            nW = mask.shape[0]
-            attn = attn.view(B_ // nW, nW, self.num_heads, N, N) + mask[:, :N, :N].unsqueeze(1).unsqueeze(0)
-            attn = attn.view(-1, self.num_heads, N, N)
-            attn = self.softmax(attn)
-
-        x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
-
-        return x
-
-    def get_position_index(self, window_size):
-        ''' Get pair-wise relative position index for each token inside the window. '''
-
-        coords_d = torch.arange(window_size[0])
-        coords_h = torch.arange(window_size[1])
-        coords_w = torch.arange(window_size[2])
-        coords = torch.stack(torch.meshgrid(coords_d, coords_h, coords_w))  # 3, Wd, Wh, Ww
-        coords_flatten = torch.flatten(coords, 1)  # 3, Wd*Wh*Ww
-        relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]  # 3, Wd*Wh*Ww, Wd*Wh*Ww
-        relative_coords = relative_coords.permute(1, 2, 0).contiguous()  # Wd*Wh*Ww, Wd*Wh*Ww, 3
-        relative_coords[:, :, 0] += window_size[0] - 1  # shift to start from 0
-        relative_coords[:, :, 1] += window_size[1] - 1
-        relative_coords[:, :, 2] += window_size[2] - 1
-
-        relative_coords[:, :, 0] *= (2 * window_size[1] - 1) * (2 * window_size[2] - 1)
-        relative_coords[:, :, 1] *= (2 * window_size[2] - 1)
-        relative_position_index = relative_coords.sum(-1)  # Wd*Wh*Ww, Wd*Wh*Ww
-
-        return relative_position_index
-
-    def get_sine_position_encoding(self, HW, num_pos_feats=64, temperature=10000, normalize=False, scale=None):
-        """ Get sine position encoding """
-
-        if scale is not None and normalize is False:
-            raise ValueError("normalize should be True if scale is passed")
-
-        if scale is None:
-            scale = 2 * math.pi
-
-        not_mask = torch.ones([1, HW[0], HW[1]])
-        y_embed = not_mask.cumsum(1, dtype=torch.float32)
-        x_embed = not_mask.cumsum(2, dtype=torch.float32)
-        if normalize:
-            eps = 1e-6
-            y_embed = y_embed / (y_embed[:, -1:, :] + eps) * scale
-            x_embed = x_embed / (x_embed[:, :, -1:] + eps) * scale
-
-        dim_t = torch.arange(num_pos_feats, dtype=torch.float32)
-        dim_t = temperature ** (2 * torch.div(dim_t, 2, rounding_mode='trunc') / num_pos_feats)
-
-        # BxCxHxW
-        pos_x = x_embed[:, :, :, None] / dim_t
-        pos_y = y_embed[:, :, :, None] / dim_t
-        pos_x = torch.stack((pos_x[:, :, :, 0::2].sin(), pos_x[:, :, :, 1::2].cos()), dim=4).flatten(3)
-        pos_y = torch.stack((pos_y[:, :, :, 0::2].sin(), pos_y[:, :, :, 1::2].cos()), dim=4).flatten(3)
-        pos_embed = torch.cat((pos_y, pos_x), dim=3).permute(0, 3, 1, 2)
-
-        return pos_embed.flatten(2).permute(0, 2, 1).contiguous()
 
 
 class Feature_modification(nn.Module):
@@ -653,4 +565,3 @@ class Stage(nn.Module):
         x = self.linear1(self.residual_group1(x, mask, alpha, beta, gamma).transpose(1, 4)).transpose(1, 4) + x
         x = self.linear2(self.residual_group2(x, mask, alpha, beta, gamma).transpose(1, 4)).transpose(1, 4) + x
         return x
-
