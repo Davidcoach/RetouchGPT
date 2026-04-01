@@ -25,8 +25,8 @@ This is the official code of **AAAI 2025**: *RetouchGPT: LLM-based Interactive H
 
 We provide the trained checkpoint **`gen_best.pth`** via Baidu Netdisk:
 
-- **Link:** <https://pan.baidu.com/s/1eVgPN12KJN8GSdOw544ZdQ>  
-- **Extraction code:** `reto`
+- **Link:** <https://pan.baidu.com/s/1KXU1-q40DYjHCKoOgYlW_Q>  
+- **Extraction code:** `mz2i`
 
 > After download, place `gen_best.pth` under `release_model/` and reference it in your config or command line.
 
